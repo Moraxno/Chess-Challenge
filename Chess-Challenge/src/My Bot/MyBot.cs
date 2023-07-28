@@ -1,11 +1,15 @@
 ﻿using ChessChallenge.API;
+using Microsoft.CodeAnalysis;
 using System;
 using System.Collections.Generic;
+using System.Diagnostics;
+using System.IO;
 using static System.Formats.Asn1.AsnWriter;
 
 public class MyBot : IChessBot
 {
     int depth = 0;
+    int seed = 0;
 
     // Piece values: null, pawn, knight, bishop, rook, queen, king
     int[] pieceValues = { 0, 100, 300, 300, 500, 900, 10000 };
@@ -13,11 +17,16 @@ public class MyBot : IChessBot
     int softInfinity = 1_000_000;
 
     Dictionary<ulong, int> cache = new();
-    Dictionary<string, int> slowCache = new();
 
-    public MyBot(int depth = 0)
+    public MyBot(int depth = 2, int seed = 0)
     {
         this.depth = depth;
+        this.seed = seed;
+    }
+
+    public bool IsDrawnGame(Board board)
+    {
+        return (board.IsInsufficientMaterial() || board.IsRepeatedPosition() || board.FiftyMoveCounter >= 50 || board.GetLegalMoves().Length == 0 && !board.IsInCheckmate());
     }
 
     public int EvaluateForWhite(Board board, Timer timer)
@@ -29,6 +38,11 @@ public class MyBot : IChessBot
             return score;
         }
 
+        if (IsDrawnGame(board))
+        {
+            return 0;
+        }
+
         if (board.IsInCheckmate())
         {
             return board.IsWhiteToMove ? -softInfinity : softInfinity;
@@ -36,11 +50,10 @@ public class MyBot : IChessBot
         
         if (board.IsInCheck())
         {
-            score += board.IsWhiteToMove ? -100 : 100;
+            score += board.IsWhiteToMove ? -25 : 25;
         }
 
-        // minimally punish shuffling
-        score -= board.FiftyMoveCounter;
+        // score = 5 * Math.Max(0, board.FiftyMoveCounter - 40);
 
         foreach (PieceList pieceList in board.GetAllPieceLists())
         {
@@ -61,32 +74,40 @@ public class MyBot : IChessBot
         }
 
         cache[board.ZobristKey] = score;
-        slowCache[board.GetFenString()] = score;
         return score;
     }
 
     public int NegaMax(Board board, Timer timer, bool maximizeForWhite, int depth = 0)
     {
-        
-        if ( depth == 0 )
+        // Debug.WriteLine($"Evaluating the board: {board.GetFenString()}");
+        if ( depth == 0 || IsDrawnGame(board) || board.IsInCheckmate())
         {
             return (maximizeForWhite ? 1 : -1 ) * EvaluateForWhite(board, timer);
         }
 
-        int value = int.MinValue;
+        int bestScore = -softInfinity;
+        int score = -softInfinity;
         foreach (Move move in board.GetLegalMoves())
         {
             board.MakeMove(move);
-            value = Math.Max(value, -NegaMax(board, timer, !maximizeForWhite, depth - 1));
+            score = -NegaMax(board, timer, !maximizeForWhite, depth - 1);
             board.UndoMove(move);
+
+            //Debug.WriteLine($"{move.MovePieceType}:{move} > {score}");
+
+            if (score > bestScore)
+            {
+                // Debug.WriteLine($"new Best from {bestScore} to {score}.");
+                bestScore = score;
+            }
         }
 
-        return value;
+        return bestScore;
     }
     public Move Think(Board board, Timer timer)
     {
         Move[] allMoves = board.GetLegalMoves();
-        Random rng = new();
+        Random rng = new(seed);
         // Move moveToPlay = allMoves[rng.Next(allMoves.Length)];
 
         int bestScore = int.MinValue;
@@ -100,8 +121,6 @@ public class MyBot : IChessBot
             board.MakeMove(move);
             int eval = NegaMax(board, timer, wePlayWhite, this.depth);
             board.UndoMove(move);
-
-            Console.WriteLine($"{move} {eval}");
 
             if ( eval > bestScore)
             {
