@@ -4,6 +4,7 @@ using System.Collections;
 using System.Collections.Generic;
 using System.Runtime.CompilerServices;
 using Engine = ChessChallenge.Chess;
+using CTimer = ChessChallenge.API.Timer;
 
 namespace Tests
 {
@@ -12,6 +13,10 @@ namespace Tests
         public static ChessChallenge.API.Timer EasyTimer(int millis = 1_000_000)
         {
             return new ChessChallenge.API.Timer(millis);
+        }
+
+        public static bool BoardIsStalemate(Board board) {
+            return board.GetLegalMoves().Length == 0;
         }
 
         public static IEnumerable<object[]> MakeConfiguration(string[] fenPositions, uint minDepth, uint maxDepth, bool flipBoard=true, bool loopSeeds=true)
@@ -47,6 +52,36 @@ namespace Tests
             }
         }
 
+        public (Board, CTimer, MyBot) ArrangeBoardBotTimer(String fenString, uint? searchDepth = null, int? seed = null)
+        {
+            var board = Board.CreateBoardFromFEN(fenString);
+            var timer = new ChessChallenge.API.Timer(999_999);
+
+            MyBot bot;
+
+            if (searchDepth.HasValue)
+            {
+                if (seed.HasValue)
+                {
+                    bot = new MyBot(searchDepth: searchDepth.Value, seed: seed.Value);
+                } else
+                {
+                    bot = new MyBot(searchDepth: searchDepth.Value);
+                }
+            } else
+            {
+                if (seed.HasValue)
+                {
+                    bot = new MyBot(seed: seed.Value);
+                }
+                else
+                {
+                    bot = new MyBot();
+                }
+            }
+
+            return (board, timer, bot);
+        }
         
 
         [Theory]
@@ -153,18 +188,51 @@ namespace Tests
 
             foreach (String fen in positions)
             {
-                Board b = Board.CreateBoardFromFEN(fenPosition);
+                Board board = Board.CreateBoardFromFEN(fenPosition);
                 ChessChallenge.API.Timer t = EasyTimer();
 
-                while (b.FiftyMoveCounter < 50)
+                while (board.FiftyMoveCounter < 50)
                 {
-                    Move move = bot.Think(b, t);
-                    b.MakeMove(move);
-                    Move move2 = enemy.Think(b, t);
-                    b.MakeMove(move2);
+                    Move move = bot.Think(board, t);
+                    board.MakeMove(move);
+                    if (BoardIsStalemate(board))
+                    {
+                        break;
+                    }
+                    Move move2 = enemy.Think(board, t);
+                    board.MakeMove(move2);
+                    if (BoardIsStalemate(board))
+                    {
+                        break;
+                    }
 
                     // No Queen will be captured
                     Assert.Equal(PieceType.None, move2.CapturePieceType);
+                }
+            }
+        }
+
+        [Theory]
+        [InlineData("8/8/8/8/3k4/8/8/K6Q w - - 0 1", 3)]
+        public void DoesNotBlunderAStalemate(String fenPosition, uint depth)
+        {
+            string[] positions = { fenPosition, Engine.FenUtility.FlipFen(fenPosition) };
+            MyBot bot = new MyBot(depth);
+            EvilBot enemy = new EvilBot();
+
+            foreach (String fen in positions)
+            {
+                Board board = Board.CreateBoardFromFEN(fenPosition);
+                ChessChallenge.API.Timer t = EasyTimer();
+
+                while (board.FiftyMoveCounter < 50)
+                {
+                    Move move = bot.Think(board, t);
+                    board.MakeMove(move);
+                    Assert.False(BoardIsStalemate(board));
+                    Move move2 = enemy.Think(board, t);
+                    board.MakeMove(move2);
+                    Assert.False(BoardIsStalemate(board));
                 }
             }
         }
@@ -204,11 +272,19 @@ namespace Tests
             }
         }
 
-        [Theory]
-        [InlineData("6k1 / 7p / b6P / p7 / 8 / 8 / 4r1p1 / 2K5 w - -0 53", 1)]
-        public void DoesNotPerformIllegalMove(string fenPosition, uint depth)
-        {
+        //[Theory]
+        //// [InlineData("6k1 / 7p / b6P / p7 / 8 / 8 / 4r1p1 / 2K5 w - -0 3", 1)]
+        //public void DoesNotPerformIllegalMove(string fenPosition, uint depth)
+        //{
+        //    (var board, var timer, var bot) = ArrangeBoardBotTimer(fenPosition, depth, null);
+        //    var move = bot.Think(board, timer);
 
-        }
+        //    Assert.False(board.IsInCheckmate());
+        //    Assert.False(board.IsInsufficientMaterial());
+        //    Assert.False(board.IsDraw());
+
+        //    // Should not raise
+        //    board.MakeMove(move);
+        //}
     }
 }
