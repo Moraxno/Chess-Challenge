@@ -8,15 +8,30 @@ using System.IO;
 using System.Linq;
 using System.Reflection.Emit;
 
+
+public class CacheResult
+{
+    public int score;
+    public uint depth;
+
+    public CacheResult(int score, uint depth = 0)
+    {
+        this.score = score;
+        this.depth = depth;
+    }
+}
+
 public class Evaluation
 {
     public int score;
     public List<Move> line;
+    public bool doNotIterateFurther;
 
-    public Evaluation(int score, List<Move> line)
+    public Evaluation(int score, List<Move> line, bool doNotIterateFurther=true)
     {
         this.score = score;
         this.line = line;
+        this.doNotIterateFurther = doNotIterateFurther;
     }
 }
 public class MyBot : IChessBot
@@ -24,13 +39,15 @@ public class MyBot : IChessBot
     uint depth = 0;
     int seed = 0;
 
+    int lastSearch = 0;
+
     Evaluation lastEval;
 
     // Piece values:      null, pawn, knight, bishop, rook, queen, king
     int[] pieceValues = {    0,  100,    300,    300,  500,   900, 1000 };
     int[] maxActivity = {    0,    0,      8,     13,   14,    27,    8 };
 
-    int softInfinity = 1_234_567;
+    static int softInfinity = 1_234_567;
 
     Dictionary<ulong, int> cache = new();
 
@@ -38,12 +55,7 @@ public class MyBot : IChessBot
     {
         this.depth = searchDepth;
         this.seed = seed;
-        this.lastEval = new Evaluation(-987654, new());
-    }
-
-    public bool IsDrawnGame(Board board)
-    {
-        return (board.IsInsufficientMaterial() || board.GameRepetitionHistory.Count(z => z == board.ZobristKey) >= 2 || board.FiftyMoveCounter >= 100 || (board.GetLegalMoves().Length == 0 && !board.IsInCheckmate()));
+        this.lastEval = new Evaluation(-softInfinity, new());
     }
 
     public int EvaluateForWhite(Board board, Timer timer, Stack<ulong> pseudoHistory)
@@ -54,7 +66,7 @@ public class MyBot : IChessBot
         fullHistory.AddRange(board.GameRepetitionHistory);
         fullHistory.AddRange(pseudoHistory);
 
-        if (IsDrawnGame(board) || fullHistory.Count(z => z == board.ZobristKey) >= 3)
+        if (board.IsDraw() || fullHistory.Count(z => z == board.ZobristKey) >= 3)
         {
             return 0;
         }
@@ -130,12 +142,14 @@ public class MyBot : IChessBot
         return score;
     }
 
-    public Evaluation NegaMax(Board board, Timer timer, bool maximizeForWhite, Stack<ulong> pseudoHistory, uint depth = 0)
+    public Evaluation AlphaBetaNegaMax(Board board, Timer timer, int alpha, int beta, bool maximizeForWhite, Stack<ulong> pseudoHistory, uint depth = 0)
     {
+        this.lastSearch++;
         List<Move> bestLine = new List<Move>();
 
         // Debug.WriteLine($"Evaluating the board: {board.GetFenString()}");
-        if ( depth == 0 || IsDrawnGame(board) || board.IsInCheckmate())
+        bool terminalGameState = board.IsDraw() || board.IsInCheckmate();
+        if (depth == 0 || terminalGameState || timer.MillisecondsElapsedThisTurn > 4000)
         {
             return new Evaluation((maximizeForWhite ? 1 : -1) * EvaluateForWhite(board, timer, pseudoHistory), bestLine);
         }
@@ -147,11 +161,12 @@ public class MyBot : IChessBot
         {
             board.MakeMove(move);
             pseudoHistory.Push(board.ZobristKey);
-            var eval = NegaMax(board, timer, !maximizeForWhite, pseudoHistory, depth - 1);
+            var eval = AlphaBetaNegaMax(board, timer, -beta, -alpha, !maximizeForWhite, pseudoHistory, depth - 1);
             eval.score *= -1;
             eval.score -= pseudoHistory.Count; // miniscul punishment for deeper searches
             board.UndoMove(move);
             pseudoHistory.Pop();
+
 
             if (eval.score > bestScore)
             {
@@ -160,15 +175,24 @@ public class MyBot : IChessBot
                 bestMove = move;
                 bestMoves = eval.line;
             }
+
+
+            alpha = Math.Max(alpha, bestScore);
+            if (alpha >= beta)
+            {
+                break;
+            }
         }
 
         bestLine.Add(bestMove);
         bestLine.AddRange(bestMoves);
 
-        var finalEval = new Evaluation(bestScore, bestLine);
+        var finalEval = new Evaluation(bestScore, bestLine, terminalGameState || (timer.MillisecondsElapsedThisTurn > 4000));
         this.lastEval = finalEval;
         return finalEval;
+
     }
+
     public Move Think(Board board, Timer timer)
     {
         Move[] allMoves = board.GetLegalMoves();
@@ -178,22 +202,43 @@ public class MyBot : IChessBot
         // int bestScore = int.MinValue;
         bool wePlayWhite = board.IsWhiteToMove;
 
-        uint bonusDepth = 0;
-        int dt = 0;
-        int dt2 = 0;
-        Evaluation eval;
-        eval = NegaMax(board, timer, wePlayWhite, new Stack<ulong>(), this.depth + bonusDepth);
+        uint newDepth = 2;
+
+        Evaluation last_eval;
+        Evaluation the_eval = new Evaluation(-softInfinity, new());
+        // eval = NegaMax(board, timer, wePlayWhite, new Stack<ulong>(), this.depth + bonusDepth);
+
+
+
+        do
+        {
+            last_eval = the_eval;
+            lastSearch = 0;
+            the_eval = AlphaBetaNegaMax(board, timer, -softInfinity, softInfinity, wePlayWhite, new Stack<ulong>(), newDepth);
+            foreach (var move in last_eval.line)
+            {
+                Console.Write(move);
+                Console.Write(" -> ");
+
+            }
+            Console.Write($"Evaluated at depth {newDepth} via {this.lastSearch} nodes in {timer.MillisecondsElapsedThisTurn} ms.");
+            Console.Write("\n");
+            newDepth++;
+        } while (!the_eval.doNotIterateFurther);
+        Console.WriteLine("");
         //do
         //{
-        //    dt = timer.MillisecondsRemaining;
+        
         //    eval = NegaMax(board, timer, wePlayWhite, this.depth + bonusDepth);
-        //    dt2 = timer.MillisecondsRemaining;
+        
         //    Console.WriteLine($"{eval.score} @ {this.depth + bonusDepth}");
         //    bonusDepth += 1;
 
         //} while (dt - dt2 < 250 && eval.score < softInfinity && timer.MillisecondsElapsedThisTurn < 1500 && timer.MillisecondsRemaining > 10_000);
 
-        return eval.line[0];
+        
+
+        return last_eval.line[0];
 
         //List<Move> bestMoves = new();
 
